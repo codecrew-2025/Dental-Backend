@@ -1,9 +1,7 @@
-// server/Server.js - Updated version with proper route registration
+// server/Server.js - Backend-only version for separate deployment
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
 import connectDB from './config/db.js';
 import authRoutes from './routes/Auth.js';
@@ -20,8 +18,6 @@ import partialRoute from './routes/partial-route.js';
 import generalCaseRoutes from './routes/general-case.js';
 import consentFormRoutes from './routes/consent-form.js';
 import caseDraftRoutes from './routes/case-draft.js';
-
-
 import prescriptionRoutes from './routes/prescription.js';
 import patientDetailsRoutes from './routes/patient-details-route.js';
 import reportsRoutes from './routes/reports.js';
@@ -66,24 +62,18 @@ if (isProduction && !process.env.JWT_SECRET) {
   if (!isVercel) process.exit(1);
 }
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const clientDistPath = path.resolve(__dirname, '../client/dist');
-
 // Connect to MongoDB
 connectDB().catch((error) => {
   dbInitError = error;
   console.error('❌ MongoDB initialization failed:', error?.message || error);
 });
 
-// Middlewares
+// CORS Configuration
 const corsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-// In development, allow requests from any origin (Vite, local network testing, etc.).
-// In production, allow only explicitly configured origins (or same-origin when `origin:false`).
 const corsOptions = {
   origin: !isProduction ? true : corsOrigins.length > 0 ? corsOrigins : false,
   credentials: true,
@@ -92,21 +82,16 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-// Ensure preflight (OPTIONS) requests are handled consistently.
-// Express 5 (path-to-regexp v6+) does not accept "*" as a route pattern.
 app.options(/.*/, cors(corsOptions));
 
-// If DB config is missing or initialization failed, fail fast with a helpful message.
-// (On Vercel we don't `process.exit`, so without this the API can look like random 404s/timeouts.)
+// Database connection middleware for API routes
 app.use('/api', async (req, res, next) => {
   if (req.method === 'OPTIONS') return next();
 
   const isDebugRoute = req.path === '/debug/routes';
   const isHealthRoute = req.path === '/health';
   const isOtpDiagnosticRoute = req.path === '/otp/email-status' || req.path === '/otp/test-email';
-  if (isHealthRoute) return next();
-  if (isOtpDiagnosticRoute) return next();
-  if (isDebugRoute) return next();
+  if (isHealthRoute || isOtpDiagnosticRoute || isDebugRoute) return next();
 
   if (!process.env.MONGO_URI) {
     const publicMessage = isProduction
@@ -115,9 +100,7 @@ app.use('/api', async (req, res, next) => {
     return res.status(503).json({
       success: false,
       message: publicMessage,
-      hint: isProduction
-        ? null
-        : 'Set MONGO_URI in Vercel Project Settings → Environment Variables and redeploy.',
+      hint: isProduction ? null : 'Set MONGO_URI in Vercel Project Settings → Environment Variables and redeploy.',
       timestamp: new Date().toISOString(),
     });
   }
@@ -151,16 +134,11 @@ app.use('/api', async (req, res, next) => {
   return next();
 });
 
-// Increase payload limits
+// Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve React build in production
-if (isProduction) {
-  app.use(express.static(clientDistPath));
-}
-
-// Add request logging middleware for debugging (development only)
+// Request logging (development only)
 if (!isProduction) {
   app.use((req, res, next) => {
     console.log(`\n[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
@@ -171,48 +149,28 @@ if (!isProduction) {
   });
 }
 
-// Health check route (dev only; in production '/' is the React app)
-if (!isProduction) {
-  app.get('/', (req, res) => {
-    res.json({
-      message: 'Backend running...',
-      timestamp: new Date().toISOString(),
-      mongodb_status: 'Connected',
-      routes: [
-        'GET /',
-        'GET /api/test',
-        'GET /api/patient-details',
-        'POST /api/patient-details',
-        'GET /api/patient-details/:id',
-        'PUT /api/patient-details/:id',
-        'DELETE /api/patient-details/:id',
-        'GET /api/patient-details/by-patient-id/:patientId',
-        'PUT /api/patient-details/by-patient-id/:patientId',
-        'DELETE /api/patient-details/by-patient-id/:patientId',
-        'GET /api/patient-details/stats/overview',
-        'POST /api/prescriptions',
-        'GET /api/prescriptions/test',
-        'GET /api/prescriptions/patient/:patientId',
-        '/api/auth/*',
-        '/api/otp/*',
-        '/api/appointment/*',
-        '/api/doctor-patient/*',
-        '/api/pedodontics/*',
-        '/api/consent-forms/*',
-      ],
-    });
-  });
-}
-
-app.get('/api/test', (req, res) => {
+// Root route - API info
+app.get('/', (req, res) => {
   res.json({
-    message: 'API is working!',
+    success: true,
+    message: 'Dental App Backend API',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    endpoints: {
+      health: '/api/health',
+      test: '/api/test',
+      auth: '/api/auth/*',
+      patients: '/api/patient-details',
+      appointments: '/api/appointment/*',
+      prescriptions: '/api/prescriptions/*',
+      billing: '/api/billing/*',
+      reports: '/api/reports/*',
+    },
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
   });
 });
 
-// Deployment diagnostics route (safe for production, no secrets exposed)
+// Health check
 app.get('/api/health', (req, res) => {
   const dbState = mongoose.connection.readyState;
   const dbStateLabel = dbState === 1 ? 'connected' : dbState === 2 ? 'connecting' : dbState === 3 ? 'disconnecting' : 'disconnected';
@@ -232,7 +190,6 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
   };
 
-  // Return 503 only when DB is clearly unavailable in production.
   if (isProduction && (!payload.checks.mongoUriPresent || payload.checks.dbState === 0 || payload.checks.dbInitError)) {
     return res.status(503).json(payload);
   }
@@ -240,80 +197,76 @@ app.get('/api/health', (req, res) => {
   return res.json(payload);
 });
 
-// Routes - Make sure all routes are properly registered
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API is working!',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Register API routes
 console.log('Registering routes...');
 
 app.use('/api/auth', authRoutes);
-console.log('✓ Auth routes registered at /api/auth');
+console.log('✓ Auth routes registered');
 
 app.use('/api/otp', otpRoutes);
-console.log('✓ OTP routes registered at /api/otp');
+console.log('✓ OTP routes registered');
 
 app.use('/api/appointment', appointmentRoutes);
-console.log('✓ Appointment routes registered at /api/appointment');
+console.log('✓ Appointment routes registered');
 
 app.use('/api/doctor-patient', doctorPatientRoutes);
-console.log('✓ Doctor-patient routes registered at /api/doctor-patient');
+console.log('✓ Doctor-patient routes registered');
 
 app.use('/api/pedodontics', pedodonticsRoutes);
-console.log('✓ Pedodontics routes registered at /api/pedodontics');
+console.log('✓ Pedodontics routes registered');
 
 app.use('/api/complete-denture', completeDentureRoutes);
-console.log('✓ Complete Denture routes registered at /api/complete-denture');
+console.log('✓ Complete Denture routes registered');
 
 app.use('/api/casesheets', casesheetRoutes);
-console.log('✓ Unified casesheets route registered at /api/casesheets');
+console.log('✓ Casesheets routes registered');
 
 app.use('/api/fpd', FpdRoutes);
-console.log('✓ FPD routes registered at /api/fpd');
+console.log('✓ FPD routes registered');
 
 app.use('/api/implant', implantRoutes);
-console.log('✓ Implant routes registered at /api/implant');  
+console.log('✓ Implant routes registered');
 
 app.use('/api/ImplantPatient', implantPatientRoute);
-console.log('✓ ImplantPatient routes registered at /api/ImplantPatient');
+console.log('✓ ImplantPatient routes registered');
 
 app.use('/api/partial', partialRoute);
-console.log('✓ Partial Denture routes registered at /api/partial');
+console.log('✓ Partial routes registered');
 
 app.use('/api/general', generalCaseRoutes);
-console.log('✓ General Case Sheet routes registered at /api/general');
+console.log('✓ General routes registered');
 
 app.use('/api/case-drafts', caseDraftRoutes);
-console.log('✓ Case draft routes registered at /api/case-drafts');
-
-
-
-
+console.log('✓ Case drafts routes registered');
 
 app.use('/api/prescriptions', prescriptionRoutes);
-console.log('✓ Prescription routes registered at /api/prescriptions');
+console.log('✓ Prescription routes registered');
 
-// THIS IS THE IMPORTANT ONE - Make sure patient-details routes are registered
 app.use('/api/patient-details', patientDetailsRoutes);
-console.log('✓ Patient details routes registered at /api/patient-details');
+console.log('✓ Patient details routes registered');
 
 app.use('/api/reports', reportsRoutes);
-console.log('✓ Reports routes registered at /api/reports');
+console.log('✓ Reports routes registered');
 
 app.use('/api/billing', billingRoutes);
-console.log('✓ Billing routes registered at /api/billing');
+console.log('✓ Billing routes registered');
 
 app.use('/api/consent-forms', consentFormRoutes);
-console.log('✓ Consent form routes registered at /api/consent-forms');
+console.log('✓ Consent forms routes registered');
 
-// React Router fallback (GET non-API routes)
-if (isProduction) {
-  app.get(/^\/(?!api).*/, (req, res) => {
-    return res.sendFile(path.join(clientDistPath, 'index.html'));
-  });
-}
-
-// Debug endpoint to list all registered routes
+// Debug routes endpoint
 app.get('/api/debug/routes', (req, res) => {
   const routes = [];
-
-  // Express 5 uses `app.router` (Express 4 used `app._router`).
   const activeRouter = app?._router || app?.router;
   const stack = Array.isArray(activeRouter?.stack) ? activeRouter.stack : [];
 
@@ -326,13 +279,11 @@ app.get('/api/debug/routes', (req, res) => {
       return;
     }
 
-    // Nested routers
     const nestedStack = layer?.handle?.stack;
     if (layer?.name === 'router' && Array.isArray(nestedStack)) {
       nestedStack.forEach((nestedLayer) => {
         if (nestedLayer?.route) {
           routes.push({
-            // Mount path introspection differs between Express versions; keep it simple.
             path: nestedLayer.route.path,
             methods: Object.keys(nestedLayer.route.methods || {}),
           });
@@ -349,33 +300,6 @@ app.get('/api/debug/routes', (req, res) => {
   });
 });
 
-// Test endpoint for patient-details specifically
-app.get('/api/debug/patient-details-test', async (req, res) => {
-  try {
-    // Import the model to test
-    const { PatientDetails } = await import('./models/patientDetails.js');
-
-    const count = await PatientDetails.countDocuments();
-    const sample = await PatientDetails.find({}).limit(2);
-
-    res.json({
-      success: true,
-      message: 'Patient details endpoint is working',
-      database_connection: 'OK',
-      patient_count: count,
-      sample_patients: sample,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Error testing patient details',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
 // Global error handler
 app.use((error, req, res, next) => {
   console.error('Global error handler caught error:', error);
@@ -387,90 +311,13 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Test prescription endpoint specifically
-app.post('/api/test-prescription', async (req, res) => {
-  try {
-    console.log('Test prescription endpoint hit');
-    console.log('Body:', req.body);
-
-    // Import the model
-    const Prescription = (await import('./models/Prescription.js')).default;
-
-    const testPrescription = new Prescription({
-      patientId: 'TEST123',
-      patientData: {
-        name: 'Test Patient',
-        age: 25,
-        gender: 'male',
-        date: new Date()
-      },
-      symptoms: 'Test symptoms',
-      diagnosis: 'Test diagnosis',
-      medicines: [{
-        type: 'pills',
-        name: 'Test Medicine',
-        dosage: { m: '1', n: '0', e: '1', n2: '0' },
-        foodIntake: 'after',
-        duration: 5,
-        asNeeded: false
-      }],
-      doctorId: 'DOC001',
-      doctorName: 'Dr. Test'
-    });
-
-    const saved = await testPrescription.save();
-
-    res.json({
-      success: true,
-      message: 'Test prescription saved successfully',
-      data: saved
-    });
-  } catch (error) {
-    console.error('Test prescription error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Test prescription failed',
-      error: error.message,
-      stack: error.stack
-    });
-  }
-});
-
 // 404 handler - MUST be last
-app.use((req, res, next) => {
-  console.log(`404 - Route not found: ${req.method} ${req.originalUrl}`);
-
-  // List available patient-details routes specifically since that's what's failing
-  const patientDetailsRoutes = [
-    'GET /api/patient-details - Get all patients',
-    'POST /api/patient-details - Create new patient',
-    'GET /api/patient-details/:id - Get patient by ID',
-    'PUT /api/patient-details/:id - Update patient by ID',
-    'DELETE /api/patient-details/:id - Delete patient by ID',
-    'GET /api/patient-details/by-patient-id/:patientId - Get patient by patientId',
-    'PUT /api/patient-details/by-patient-id/:patientId - Update patient by patientId',
-    'DELETE /api/patient-details/by-patient-id/:patientId - Delete patient by patientId',
-    'GET /api/patient-details/stats/overview - Get patient statistics'
-  ];
-
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: `Route ${req.method} ${req.originalUrl} not found`,
+    hint: 'Check /api/debug/routes for available endpoints',
     timestamp: new Date().toISOString(),
-    availableRoutes: [
-      'GET /',
-      'GET /api/test',
-      'GET /api/debug/routes',
-      'GET /api/debug/patient-details-test',
-      ...patientDetailsRoutes,
-      'POST /api/prescriptions',
-      'GET /api/prescriptions/test',
-      'GET /api/prescriptions/patient/:patientId',
-      'POST /api/consent-forms',
-      'GET /api/consent-forms',
-      'GET /api/consent-forms/:id',
-      'GET /api/consent-forms/patient/:patientId'
-    ]
   });
 });
 
@@ -478,19 +325,12 @@ const PORT = process.env.PORT || 5000;
 if (!isVercel) {
   app.listen(PORT, () => {
     console.log('\n' + '='.repeat(60));
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`🚀 Backend API running at http://localhost:${PORT}`);
     console.log('='.repeat(60));
     console.log('Available endpoints:');
-    console.log(`   Home: http://localhost:${PORT}/`);
+    console.log(`   Health: http://localhost:${PORT}/api/health`);
     console.log(`   Test: http://localhost:${PORT}/api/test`);
-    console.log(`   Debug Routes: http://localhost:${PORT}/api/debug/routes`);
-    console.log(`   Patient Details:`);
-    console.log(`      • GET    http://localhost:${PORT}/api/patient-details`);
-    console.log(`      • POST   http://localhost:${PORT}/api/patient-details`);
-    console.log(`      • GET    http://localhost:${PORT}/api/patient-details/:id`);
-    console.log(`      • PUT    http://localhost:${PORT}/api/patient-details/:id`);
-    console.log(`   Prescriptions: http://localhost:${PORT}/api/prescriptions`);
-    console.log(`   Consent Forms: http://localhost:${PORT}/api/consent-forms`);
+    console.log(`   Routes: http://localhost:${PORT}/api/debug/routes`);
     console.log('='.repeat(60) + '\n');
   });
 }
